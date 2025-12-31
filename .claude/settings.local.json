@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir \"%APPDATA%\\\\Claude\" /s /b)",
+      "Bash(findstr:*)",
+      "Bash(mkdir:*)",
+      "WebFetch(domain:context7.com)",
+      "Bash(curl:*)",
+      "Bash(python:*)",
+      "Bash(cd:*)",
+      "Bash(git add:*)"
+    ]
+  },
+  "enabledPlugins": {
+    "context7@claude-plugins-official": true
+  }
+}
