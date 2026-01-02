@@ -103,9 +103,8 @@ class Agent:
             conversation.id, MessageRole.USER.value, message
         )
 
-        # Get message history
+        # Get message history (excluding the message we just added)
         history = await self._get_message_history(conversation.id)
-        # Remove the last message (the one we just added) since we'll send it separately
         history = history[:-1]
 
         # Get tools schema
@@ -113,34 +112,53 @@ class Agent:
             self.session, conversation.id
         )
 
-        # Generate response from Gemini
-        response = await gemini_service.generate_response(
+        # Build initial contents array
+        contents = gemini_service.build_initial_contents(history, message)
+
+        # Generate initial response
+        response = await gemini_service.generate_with_contents(
             system_prompt=self.system_prompt,
-            history=history,
-            user_message=message,
+            contents=contents,
             tools_schema=tools_schema,
         )
 
-        # Handle function calls (may be chained)
-        max_iterations = 5  # Prevent infinite loops
+        # Handle function calls with ACCUMULATED contents
+        max_iterations = 10  # Increased to handle multiple sequential calls
         iteration = 0
+        last_tool_name = None
+        collected_text = ""  # Collect any text returned before/between function calls
 
         while response["type"] == "function_call" and iteration < max_iterations:
-            tool_name = response["name"]
-            tool_args = response["args"]
+            # Collect any text that came before function calls
+            if response.get("text_before_calls"):
+                collected_text += response["text_before_calls"]
 
-            # Execute the tool
-            tool_result = await self._execute_tool(
-                conversation.id, tool_name, tool_args
-            )
+            # Get ALL function calls from this response
+            all_function_calls = response.get("all_function_calls", [])
 
-            # Get updated response with tool result
-            response = await gemini_service.generate_response_with_tool_result(
+            # Execute ALL function calls and append each to contents
+            for func_call in all_function_calls:
+                tool_name = func_call["name"]
+                tool_args = func_call["args"]
+                last_tool_name = tool_name
+
+                print(f"Executing tool: {tool_name} with args: {tool_args}")
+
+                # Execute the tool
+                tool_result = await self._execute_tool(
+                    conversation.id, tool_name, tool_args
+                )
+
+                # CRITICAL: Append function call AND result to contents
+                # This preserves the conversation context for the next call
+                contents = gemini_service.append_function_call_and_result(
+                    contents, tool_name, tool_args, tool_result
+                )
+
+            # Generate next response with updated contents
+            response = await gemini_service.generate_with_contents(
                 system_prompt=self.system_prompt,
-                history=history,
-                user_message=message,
-                function_name=tool_name,
-                function_result=tool_result,
+                contents=contents,
                 tools_schema=tools_schema,
             )
 
@@ -148,6 +166,35 @@ class Agent:
 
         # Extract final text response
         assistant_message = response.get("content", "")
+
+        # Include any text collected before function calls
+        if collected_text and not assistant_message:
+            assistant_message = collected_text
+
+        # Fallback message if Gemini didn't return text after tool execution
+        if not assistant_message and last_tool_name:
+            if last_tool_name == "end_conversation":
+                assistant_message = (
+                    "¡Gracias por contactar al Grupo Kossodo! "
+                    "Un asesor se comunicará contigo pronto. ¡Que tengas un excelente día!"
+                )
+            elif last_tool_name == "save_inquiry":
+                assistant_message = (
+                    "Perfecto. Un asesor de nuestro equipo "
+                    "se pondrá en contacto contigo a la brevedad. "
+                    "¿Hay algo más en lo que pueda ayudarte?"
+                )
+            elif last_tool_name == "save_contact":
+                assistant_message = (
+                    "Gracias. ¿Me podrías proporcionar los datos que aún faltan?"
+                )
+            elif last_tool_name == "set_company":
+                assistant_message = (
+                    "Entendido. Para que un asesor pueda contactarte, "
+                    "necesito algunos datos. ¿Cuál es tu nombre completo?"
+                )
+            else:
+                assistant_message = "¿En qué más puedo ayudarte?"
 
         # Save assistant response
         await self._save_message(

@@ -1,3 +1,5 @@
+import traceback
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +35,11 @@ async def chat(
         )
 
     except Exception as e:
+        print(f"\n{'='*50}")
+        print(f"ERROR: {type(e).__name__}: {str(e)}")
+        print(f"{'='*50}")
+        traceback.print_exc()
+        print(f"{'='*50}\n")
         raise HTTPException(
             status_code=500,
             detail=f"Error processing message: {str(e)}",

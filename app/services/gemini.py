@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from google import genai
 from google.genai import types
@@ -46,101 +46,87 @@ class GeminiService:
             )
         return history
 
-    async def generate_response(
-        self,
-        system_prompt: str,
-        history: List[Dict[str, str]],
-        user_message: str,
-        tools_schema: Optional[List[Dict[str, Any]]] = None,
-    ) -> Dict[str, Any]:
-        """
-        Generate a response from Gemini.
+    def _parse_response(self, response) -> Dict[str, Any]:
+        """Parse Gemini response and extract function calls or text."""
+        if not response.candidates:
+            return {"type": "text", "content": "", "all_function_calls": []}
 
-        Returns:
-            Dict with either:
-            - {"type": "text", "content": str} for text responses
-            - {"type": "function_call", "name": str, "args": dict} for function calls
-        """
-        # Build conversation contents
-        contents = self._build_history(history)
-        contents.append(
-            types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=user_message)],
-            )
-        )
-
-        # Prepare tools
-        tools = self._create_tools(tools_schema) if tools_schema else None
-
-        # Generate response
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                tools=tools,
-            ),
-        )
-
-        # Parse response
         candidate = response.candidates[0]
-        part = candidate.content.parts[0]
 
-        # Check if it's a function call
-        if part.function_call:
+        if not candidate.content or not candidate.content.parts:
+            return {"type": "text", "content": "", "all_function_calls": []}
+
+        # Collect ALL function calls and text from ALL parts
+        text_content = ""
+        all_function_calls = []
+
+        for part in candidate.content.parts:
+            if part.function_call:
+                all_function_calls.append({
+                    "name": part.function_call.name,
+                    "args": dict(part.function_call.args) if part.function_call.args else {},
+                })
+            if part.text:
+                text_content += part.text
+
+        # If there are function calls, return them all
+        if all_function_calls:
             return {
                 "type": "function_call",
-                "name": part.function_call.name,
-                "args": dict(part.function_call.args) if part.function_call.args else {},
+                "name": all_function_calls[0]["name"],
+                "args": all_function_calls[0]["args"],
+                "all_function_calls": all_function_calls,
+                "text_before_calls": text_content,  # Any text before function calls
             }
 
-        # It's a text response
+        # No function calls, return text
         return {
             "type": "text",
-            "content": part.text,
+            "content": text_content,
+            "all_function_calls": [],
         }
 
-    async def generate_response_with_tool_result(
+    def build_initial_contents(
         self,
-        system_prompt: str,
         history: List[Dict[str, str]],
         user_message: str,
-        function_name: str,
-        function_result: Dict[str, Any],
-        tools_schema: Optional[List[Dict[str, Any]]] = None,
-    ) -> Dict[str, Any]:
-        """
-        Continue generation after a function call with its result.
-
-        This is used to feed back the result of a function call to Gemini
-        so it can generate the final response to the user.
-        """
-        # Build conversation contents
+    ) -> List[types.Content]:
+        """Build initial contents array from history and user message."""
         contents = self._build_history(history)
-
-        # Add user message
         contents.append(
             types.Content(
                 role="user",
                 parts=[types.Part.from_text(text=user_message)],
             )
         )
+        return contents
 
-        # Add model's function call (simulated)
+    def append_function_call_and_result(
+        self,
+        contents: List[types.Content],
+        function_name: str,
+        function_args: Dict[str, Any],
+        function_result: Dict[str, Any],
+    ) -> List[types.Content]:
+        """
+        Append a function call (from model) and its result (from user) to contents.
+
+        This preserves the conversation history properly for multi-turn function calling.
+        """
+        # Add model's function call
         contents.append(
             types.Content(
                 role="model",
                 parts=[
                     types.Part.from_function_call(
                         name=function_name,
-                        args=function_result.get("data", {}),
+                        args=function_args,
                     )
                 ],
             )
         )
 
-        # Add function response
+        # Add function response (as user role per Gemini API)
         contents.append(
             types.Content(
                 role="user",
@@ -153,10 +139,22 @@ class GeminiService:
             )
         )
 
-        # Prepare tools
+        return contents
+
+    async def generate_with_contents(
+        self,
+        system_prompt: str,
+        contents: List[types.Content],
+        tools_schema: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Generate a response using the provided contents array.
+
+        This is the core method that handles both initial requests and
+        continuation after function calls.
+        """
         tools = self._create_tools(tools_schema) if tools_schema else None
 
-        # Generate response
         response = self.client.models.generate_content(
             model=self.model_name,
             contents=contents,
@@ -166,22 +164,54 @@ class GeminiService:
             ),
         )
 
-        # Parse response
-        candidate = response.candidates[0]
-        part = candidate.content.parts[0]
+        # Debug logging
+        print(f"\n{'='*50}")
+        print(f"GEMINI RESPONSE:")
+        print(f"Contents length: {len(contents)}")
+        print(f"Candidates: {len(response.candidates) if response.candidates else 0}")
+        if response.candidates:
+            candidate = response.candidates[0]
+            print(f"Finish reason: {candidate.finish_reason}")
+            if candidate.content and candidate.content.parts:
+                for i, part in enumerate(candidate.content.parts):
+                    if part.function_call:
+                        print(f"Part {i}: FUNCTION_CALL({part.function_call.name}, {dict(part.function_call.args) if part.function_call.args else {}})")
+                    elif part.text:
+                        print(f"Part {i}: TEXT({part.text[:100]}...)" if len(part.text or "") > 100 else f"Part {i}: TEXT({part.text})")
+                    else:
+                        print(f"Part {i}: {part}")
+        print(f"{'='*50}\n")
 
-        # Check for another function call
-        if part.function_call:
-            return {
-                "type": "function_call",
-                "name": part.function_call.name,
-                "args": dict(part.function_call.args) if part.function_call.args else {},
-            }
+        return self._parse_response(response)
 
-        return {
-            "type": "text",
-            "content": part.text,
-        }
+    # Legacy methods for backwards compatibility
+    async def generate_response(
+        self,
+        system_prompt: str,
+        history: List[Dict[str, str]],
+        user_message: str,
+        tools_schema: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Generate a response from Gemini (legacy method)."""
+        contents = self.build_initial_contents(history, user_message)
+        return await self.generate_with_contents(system_prompt, contents, tools_schema)
+
+    async def generate_response_with_tool_result(
+        self,
+        system_prompt: str,
+        history: List[Dict[str, str]],
+        user_message: str,
+        function_name: str,
+        function_args: Dict[str, Any],
+        function_result: Dict[str, Any],
+        tools_schema: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Continue generation after a function call (legacy method)."""
+        contents = self.build_initial_contents(history, user_message)
+        contents = self.append_function_call_and_result(
+            contents, function_name, function_args, function_result
+        )
+        return await self.generate_with_contents(system_prompt, contents, tools_schema)
 
 
 # Singleton instance

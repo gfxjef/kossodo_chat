@@ -8,7 +8,14 @@
       "Bash(curl:*)",
       "Bash(python:*)",
       "Bash(cd:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(dir \"%APPDATA%\\\\..\\\\Local\\\\Claude\\\\plugins\" /s /b)",
+      "Bash(dir:*)",
+      "WebSearch",
+      "WebFetch(domain:ai.google.dev)",
+      "Bash(git clean:*)",
+      "Bash(git rm:*)",
+      "Bash(git rebase:*)"
     ]
   },
   "enabledPlugins": {
