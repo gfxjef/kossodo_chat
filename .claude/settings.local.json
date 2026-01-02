@@ -14,8 +14,10 @@
       "WebSearch",
       "WebFetch(domain:ai.google.dev)",
       "Bash(git clean:*)",
-      "Bash(git rm:*)",
-      "Bash(git rebase:*)"
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)"
     ]
   },
   "enabledPlugins": {
