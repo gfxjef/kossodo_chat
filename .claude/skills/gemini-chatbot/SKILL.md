@@ -56,6 +56,77 @@ while True:
 
 **Pattern details:** See `references/function_calling.md`
 
+## Conversation Flow Architecture: 3 Eslabones Model
+
+Most customer service chatbots follow a **3-stage conversation model**. Understanding this helps organize tools and system prompts:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ESLABÓN 1: Greeting + Data Collection                          │
+│  ─────────────────────────────────────                          │
+│  • Agent introduction                                           │
+│  • Identify customer need/intent                                │
+│  • Collect required contact/identification data                 │
+│                                                                 │
+│  Typical tools: set_context, save_contact, identify_user        │
+│  Stability: HIGH (rarely changes)                               │
+└─────────────────────────────────────────────────────────────────┘
+                                ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  ESLABÓN 2: Query Resolution  ⚡ PRIMARY EXTENSION POINT        │
+│  ─────────────────────────────                                  │
+│  • Capture specific customer request                            │
+│  • Execute business logic tools                                 │
+│  • THIS IS WHERE MOST NEW TOOLS GO                              │
+│                                                                 │
+│  Example tools:                                                 │
+│    - save_inquiry      (capture request)                        │
+│    - get_quote         (pricing)                                │
+│    - check_inventory   (availability)                           │
+│    - schedule_service  (appointments)                           │
+│    - search_products   (catalog)                                │
+│    - process_order     (transactions)                           │
+│                                                                 │
+│  Stability: LOW (frequently extended with new business needs)   │
+└─────────────────────────────────────────────────────────────────┘
+                                ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  ESLABÓN 3: Closure                                             │
+│  ──────────────────                                             │
+│  • Confirm next steps                                           │
+│  • Close conversation gracefully                                │
+│                                                                 │
+│  Typical tools: end_conversation, send_summary                  │
+│  Stability: HIGH (rarely changes)                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Design Principles:**
+
+1. **Tool Classification**: When adding new tools, identify which eslabón they belong to
+2. **System Prompt Updates**: Each new tool requires prompt instructions for when/how Gemini should use it
+3. **Eslabón 2 Focus**: 90% of new features are Eslabón 2 tools
+4. **Flow Control**: System prompt defines transitions between eslabones (e.g., "only proceed to save_inquiry after all contact fields collected")
+
+**Example System Prompt Structure:**
+```python
+SYSTEM_PROMPT = """
+## ESLABÓN 1: Saludo y Datos
+- Presentarte como [Agent Name]
+- Identificar necesidad del cliente
+- Recopilar datos de contacto usando save_contact
+
+## ESLABÓN 2: Resolución
+- [Tool-specific instructions here]
+- Usar get_quote cuando cliente pida cotización
+- Usar check_inventory cuando pregunte disponibilidad
+
+## ESLABÓN 3: Cierre
+- Confirmar siguientes pasos
+- Usar end_conversation al finalizar
+"""
+```
+
 ## Project Structure
 
 Standard FastAPI + Gemini chatbot layout:

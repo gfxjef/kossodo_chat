@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: str = "http://localhost:3000,http://localhost:8000"
 
+    # Conversation timeout (in seconds)
+    # 60 seconds for testing, increase to 900 (15 min) for production
+    conversation_idle_timeout_seconds: int = 60
+
     @property
     def cors_origins_list(self) -> List[str]:
         """Parse CORS origins string into list."""

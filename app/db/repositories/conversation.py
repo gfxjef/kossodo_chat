@@ -1,11 +1,13 @@
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config.settings import settings
 from app.db.repositories.base import BaseRepository
-from app.models.database import Contact, Conversation, Inquiry, Message
+from app.models.database import Contact, Conversation, ConversationStatus, Inquiry, Message
 
 
 class ConversationRepository(BaseRepository[Conversation]):
@@ -38,6 +40,24 @@ class ConversationRepository(BaseRepository[Conversation]):
     async def set_status(self, conversation: Conversation, status: str) -> Conversation:
         """Set the status of a conversation."""
         return await self.update(conversation, status=status)
+
+    def is_expired(self, conversation: Conversation) -> bool:
+        """Check if conversation has expired due to inactivity."""
+        if conversation.status != ConversationStatus.ACTIVE.value:
+            return False
+
+        now = datetime.now(timezone.utc)
+        # Handle timezone-naive datetimes from SQLite
+        updated_at = conversation.updated_at
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+
+        idle_limit = timedelta(seconds=settings.conversation_idle_timeout_seconds)
+        return (now - updated_at) > idle_limit
+
+    async def expire_conversation(self, conversation: Conversation) -> Conversation:
+        """Mark conversation as expired."""
+        return await self.update(conversation, status=ConversationStatus.EXPIRED.value)
 
 
 class MessageRepository(BaseRepository[Message]):

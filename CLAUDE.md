@@ -72,6 +72,54 @@ Key methods:
 - **Natural conversation**: Doesn't repeat data back to the customer; just asks for missing fields
 - Modify this file to change agent behavior without code changes.
 
+### Conversation Flow: 3 Eslabones (Stages)
+
+The conversation follows a **3-stage model**. This architecture is critical for understanding where new tools belong:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  ESLABÓN 1: Saludo + Recopilación de Datos                              │
+│  ─────────────────────────────────────────                              │
+│  • Presentación del agente                                              │
+│  • Identificar necesidad del cliente → set_company                      │
+│  • Recopilar 5 campos de contacto → save_contact                        │
+│  • Tools: set_company, save_contact                                     │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│  ESLABÓN 2: Obtener Consulta y Resolver  ⚡ EXTENSIBLE                  │
+│  ────────────────────────────────────────                               │
+│  • Capturar la consulta/necesidad específica                            │
+│  • Ejecutar herramientas de negocio                                     │
+│  • AQUÍ VAN TODAS LAS TOOLS DE NEGOCIO FUTURAS                          │
+│                                                                         │
+│  Tools actuales:                                                        │
+│    - save_inquiry: Registra la consulta para seguimiento                │
+│                                                                         │
+│  Tools futuras (ejemplos):                                              │
+│    - get_quote: Cotizaciones automáticas                                │
+│    - check_inventory: Consulta de disponibilidad                        │
+│    - schedule_service: Agendar servicios técnicos                       │
+│    - track_order: Seguimiento de pedidos                                │
+│    - get_product_info: Información técnica de productos                 │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│  ESLABÓN 3: Despedida                                                   │
+│  ────────────────────                                                   │
+│  • Confirmar que un asesor contactará al cliente                        │
+│  • Cerrar conversación cordialmente                                     │
+│  • Tools: end_conversation                                              │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Important for Development:**
+- When adding new tools, identify which **eslabón** they belong to
+- **Eslabón 2 is the primary extension point** - most new business features go here
+- Eslabones 1 and 3 are relatively stable (contact capture + goodbye)
+- The system prompt (`system_prompt.py`) must be updated to teach Gemini when/how to use new tools
+- Each tool should have clear conditions in the prompt for when it should be called
+
 ### Database Layer
 
 Async SQLAlchemy 2.0 with SQLite. Uses repository pattern:

@@ -1,6 +1,8 @@
+import re
 import uuid
 from typing import Dict, List, Optional
 
+from google.genai import types as genai_types
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.prompts.system_prompt import get_system_prompt
@@ -8,7 +10,7 @@ from app.db.repositories.conversation import (
     ConversationRepository,
     MessageRepository,
 )
-from app.models.database import MessageRole
+from app.models.database import ConversationStatus, MessageRole
 from app.services.gemini import gemini_service
 from app.services.tools import ToolRegistry
 
@@ -32,13 +34,28 @@ class Agent:
     async def _get_or_create_conversation(
         self, session_id: Optional[str]
     ) -> tuple:
-        """Get existing conversation or create a new one."""
+        """Get existing conversation or create a new one.
+
+        Handles conversation expiration:
+        - If conversation is ACTIVE but idle too long → mark as EXPIRED, create new
+        - If conversation is COMPLETED or EXPIRED → create new
+        """
         conv_repo = ConversationRepository(self.session)
 
         if session_id:
             conversation = await conv_repo.get_by_session_id(session_id)
             if conversation:
-                return conversation, session_id
+                # Check if conversation is still usable
+                if conversation.status == ConversationStatus.ACTIVE.value:
+                    # Check for idle timeout
+                    if conv_repo.is_expired(conversation):
+                        # Mark as expired and create new
+                        await conv_repo.expire_conversation(conversation)
+                        print(f"Conversation {session_id} expired due to inactivity")
+                    else:
+                        # Still active and not expired, continue
+                        return conversation, session_id
+                # If COMPLETED, EXPIRED, or just expired above → create new
 
         # Create new conversation with UUID
         new_session_id = str(uuid.uuid4())
@@ -80,6 +97,33 @@ class Agent:
             "data": result.data,
         }
 
+    def _looks_like_contact_data(self, message: str) -> bool:
+        """
+        Detect if message likely contains contact data.
+
+        This helps Gemini by adding contextual hints when the user
+        sends data in list format (name, phone, email, etc.)
+        """
+        has_email = "@" in message and "." in message.split("@")[-1]
+        numbers = re.findall(r'\d+', message)
+        has_long_number = any(len(n) >= 8 for n in numbers)
+        has_multiple_items = message.count(",") >= 1 or message.count(" ") >= 3
+
+        # If has email OR (has long number AND multiple items)
+        return has_email or (has_long_number and has_multiple_items)
+
+    def _create_contact_hint(self) -> genai_types.Content:
+        """Create a contextual hint for processing contact data."""
+        return genai_types.Content(
+            role="user",
+            parts=[genai_types.Part.from_text(
+                text="[Sistema: El mensaje anterior parece contener datos de contacto. "
+                "Identifica: nombre, teléfono (9 dígitos), email (@), RUC (11 dígitos) o DNI (8 dígitos), "
+                "y nombre de empresa. Usa save_contact con los datos identificados, luego responde "
+                "preguntando SOLO por los datos que faltan.]"
+            )],
+        )
+
     async def process_message(
         self, message: str, session_id: Optional[str] = None
     ) -> Dict:
@@ -115,10 +159,17 @@ class Agent:
         # Build initial contents array
         contents = gemini_service.build_initial_contents(history, message)
 
+        # Proactive hint: If message looks like contact data, add hint at END
+        # Following Google's best practice: "place specific instructions at the end"
+        contents_for_generation = contents.copy()
+        if self._looks_like_contact_data(message):
+            print("INFO: Detected contact data pattern, adding contextual hint")
+            contents_for_generation.append(self._create_contact_hint())
+
         # Generate initial response
         response = await gemini_service.generate_with_contents(
             system_prompt=self.system_prompt,
-            contents=contents,
+            contents=contents_for_generation,
             tools_schema=tools_schema,
         )
 
@@ -170,6 +221,60 @@ class Agent:
         # Include any text collected before function calls
         if collected_text and not assistant_message:
             assistant_message = collected_text
+
+        # Fallback for completely empty response (no tools, no text)
+        # This can happen when Gemini gets confused with complex input
+        if not assistant_message and not last_tool_name:
+            # Retry with contextual hint (don't repeat same request)
+            print("WARNING: Empty response from Gemini, retrying with hint...")
+
+            # Add hint to help Gemini understand what to do
+            retry_contents = contents.copy()
+            retry_contents.append(self._create_contact_hint())
+
+            retry_response = await gemini_service.generate_with_contents(
+                system_prompt=self.system_prompt,
+                contents=retry_contents,
+                tools_schema=tools_schema,
+            )
+
+            # Handle retry response - could be text or function_call
+            if retry_response["type"] == "function_call":
+                # Process any function calls from retry
+                retry_calls = retry_response.get("all_function_calls", [])
+                for func_call in retry_calls:
+                    tool_name = func_call["name"]
+                    tool_args = func_call["args"]
+                    last_tool_name = tool_name
+                    print(f"Executing tool (retry): {tool_name} with args: {tool_args}")
+                    tool_result = await self._execute_tool(
+                        conversation.id, tool_name, tool_args
+                    )
+                    # Use original contents to avoid polluting with hint
+                    contents = gemini_service.append_function_call_and_result(
+                        contents, tool_name, tool_args, tool_result
+                    )
+
+                # Get final response after retry tools
+                final_retry = await gemini_service.generate_with_contents(
+                    system_prompt=self.system_prompt,
+                    contents=contents,
+                    tools_schema=tools_schema,
+                )
+                assistant_message = final_retry.get("content", "")
+            else:
+                assistant_message = retry_response.get("content", "")
+
+            # If still empty after retry, provide contextual fallback
+            if not assistant_message:
+                # Check message patterns for better fallback
+                if self._looks_like_contact_data(message):
+                    assistant_message = (
+                        "Gracias por tu información. ¿Podrías confirmar tu nombre completo, "
+                        "teléfono, email, RUC/DNI y nombre de empresa?"
+                    )
+                else:
+                    assistant_message = "¿En qué puedo ayudarte?"
 
         # Fallback message if Gemini didn't return text after tool execution
         if not assistant_message and last_tool_name:

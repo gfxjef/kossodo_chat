@@ -21,6 +21,7 @@ class ConversationStatus(str, Enum):
     """Status of a conversation."""
     ACTIVE = "active"
     COMPLETED = "completed"
+    EXPIRED = "expired"
     TRANSFERRED = "transferred"
 
 
