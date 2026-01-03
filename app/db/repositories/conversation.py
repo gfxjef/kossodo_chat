@@ -46,11 +46,13 @@ class ConversationRepository(BaseRepository[Conversation]):
         if conversation.status != ConversationStatus.ACTIVE.value:
             return False
 
-        now = datetime.now(timezone.utc)
-        # Handle timezone-naive datetimes from SQLite
+        # Use local time for comparison since SQLite stores local timestamps
+        now = datetime.now()
         updated_at = conversation.updated_at
-        if updated_at.tzinfo is None:
-            updated_at = updated_at.replace(tzinfo=timezone.utc)
+
+        # Remove timezone info if present for consistent comparison
+        if updated_at.tzinfo is not None:
+            updated_at = updated_at.replace(tzinfo=None)
 
         idle_limit = timedelta(seconds=settings.conversation_idle_timeout_seconds)
         return (now - updated_at) > idle_limit
