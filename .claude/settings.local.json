@@ -19,7 +19,10 @@
       "Bash(git pull:*)",
       "Bash(git stash:*)",
       "Bash(git ls-tree:*)",
-      "WebFetch(domain:quidget.ai)"
+      "WebFetch(domain:quidget.ai)",
+      "WebFetch(domain:arize.com)",
+      "WebFetch(domain:developers.googleblog.com)",
+      "Bash(pytest:*)"
     ]
   },
   "enabledPlugins": {

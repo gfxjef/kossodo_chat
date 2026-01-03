@@ -63,14 +63,33 @@ Key methods:
 - `save_inquiry`: Saves customer's inquiry description. Only called after all contact fields are complete.
 - `end_conversation`: Marks conversation as completed
 
-**System Prompt (`app/core/prompts/system_prompt.py`)**: Contains the entire conversation flow rules in Spanish. The agent:
-- Presents itself as "Grupo Kossodo"
-- Automatically infers business unit (KOSSODO for sales, KOSSOMET for services)
-- Never asks "Is this for Kossodo or Kossomet?" - it decides based on context
-- Can change business unit if customer corrects it
-- **Privacy rule**: Never mentions "saving", "registering", or "storing" customer data
-- **Natural conversation**: Doesn't repeat data back to the customer; just asks for missing fields
-- Modify this file to change agent behavior without code changes.
+**Multi-Agent Prompt System (`app/core/prompts/`)**: Follows the **Coordinator/Dispatcher Pattern** from Google ADK. Dynamic routing based on detected business unit:
+
+```
+app/core/prompts/
+├── system_prompt.py      # Coordinator - routes to appropriate prompt
+├── router_prompt.py      # Phase 1: Detect intent (sales vs services)
+├── kossodo_prompt.py     # Phase 2a: Specialized for equipment SALES
+└── kossomet_prompt.py    # Phase 2b: Specialized for technical SERVICES
+```
+
+**Prompt Routing Flow:**
+1. `company=None` → Router prompt (minimal, only detects intent)
+2. `company="kossodo"` → Kossodo prompt (sales specialist with usage inquiry)
+3. `company="kossomet"` → Kossomet prompt (services specialist)
+
+**Key Differences Between Prompts:**
+- **Router**: Only greeting + intent detection. Single tool: `set_company`
+- **Kossodo**: Contact collection + **usage inquiry** (asks "what will you use the equipment for?")
+- **Kossomet**: Contact collection + service details (no usage inquiry - customer already has equipment)
+
+**Tool Groups** (defined in `registry.py`):
+- `ROUTER_TOOLS`: `["set_company"]`
+- `KOSSODO_TOOLS`: `["save_contact", "save_inquiry", "end_conversation"]`
+- `KOSSOMET_TOOLS`: `["save_contact", "save_inquiry", "end_conversation"]`
+
+**Privacy rule**: Never mentions "saving", "registering", or "storing" customer data
+**Natural conversation**: Doesn't repeat data back to the customer; just asks for missing fields
 
 ### Conversation Flow: 3 Eslabones (Stages)
 
@@ -165,8 +184,22 @@ Environment variables in `.env`:
 2. Extend `BaseTool` class
 3. Add `@ToolRegistry.register` decorator
 4. Implement `name`, `description`, `get_parameters_schema()`, and `execute()`
+5. **Add to appropriate tool group** in `registry.py`:
+   - `ROUTER_TOOLS`: Tools for intent detection phase
+   - `KOSSODO_TOOLS`: Tools for sales conversations
+   - `KOSSOMET_TOOLS`: Tools for services conversations
+6. **Update the corresponding prompt** to teach Gemini when/how to use the new tool
 
-Tool is automatically available to Gemini after registration.
+**Example: Adding a tool for Kossodo only:**
+```python
+# 1. In registry.py, add to KOSSODO_TOOLS:
+KOSSODO_TOOLS = ["save_contact", "save_inquiry", "end_conversation", "get_quote"]
+
+# 2. In kossodo_prompt.py, add instructions:
+# - When to call get_quote
+# - What parameters to use
+# - How to present the result to customer
+```
 
 ## Code Style
 

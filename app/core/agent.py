@@ -17,19 +17,25 @@ from app.services.tools import ToolRegistry
 
 class Agent:
     """
-    Main agent that orchestrates conversations.
+    Main agent that orchestrates conversations using multi-agent routing.
 
-    All conversation logic is controlled by the system prompt.
+    Architecture follows the Coordinator/Dispatcher Pattern:
+    - Router phase: Detect intent (sales vs services) using minimal prompt
+    - Kossodo phase: Specialized for equipment sales
+    - Kossomet phase: Specialized for technical services
+
+    All conversation logic is controlled by the system prompts.
     This class only handles:
     - Session management
     - Message persistence
     - Tool execution
+    - Dynamic prompt/tool routing
     - Communication with Gemini
     """
 
     def __init__(self, session: AsyncSession):
         self.session = session
-        self.system_prompt = get_system_prompt()
+        # Note: system_prompt is now dynamic, retrieved per-request based on company
 
     async def _get_or_create_conversation(
         self, session_id: Optional[str]
@@ -124,11 +130,21 @@ class Agent:
             )],
         )
 
+    async def _refresh_conversation(self, session_id: str):
+        """Refresh conversation from database to get updated company."""
+        conv_repo = ConversationRepository(self.session)
+        return await conv_repo.get_by_session_id(session_id)
+
     async def process_message(
         self, message: str, session_id: Optional[str] = None
     ) -> Dict:
         """
         Process a user message and return the agent's response.
+
+        Uses dynamic routing based on detected company:
+        - No company: Router prompt (detect intent)
+        - Kossodo: Sales specialist prompt
+        - Kossomet: Services specialist prompt
 
         Args:
             message: The user's message
@@ -151,24 +167,29 @@ class Agent:
         history = await self._get_message_history(conversation.id)
         history = history[:-1]
 
-        # Get tools schema
-        tools_schema = ToolRegistry.get_gemini_tools(
-            self.session, conversation.id
+        # DYNAMIC ROUTING: Get prompt and tools based on company
+        current_company = conversation.company
+        system_prompt = get_system_prompt(current_company)
+        tools_schema = ToolRegistry.get_gemini_tools_for_group(
+            current_company, self.session, conversation.id
         )
+
+        print(f"INFO: Using {'router' if not current_company else current_company} "
+              f"prompt with {len(tools_schema)} tools")
 
         # Build initial contents array
         contents = gemini_service.build_initial_contents(history, message)
 
         # Proactive hint: If message looks like contact data, add hint at END
-        # Following Google's best practice: "place specific instructions at the end"
+        # Only apply hint if we're past the router phase (company is set)
         contents_for_generation = contents.copy()
-        if self._looks_like_contact_data(message):
+        if current_company and self._looks_like_contact_data(message):
             print("INFO: Detected contact data pattern, adding contextual hint")
             contents_for_generation.append(self._create_contact_hint())
 
         # Generate initial response
         response = await gemini_service.generate_with_contents(
-            system_prompt=self.system_prompt,
+            system_prompt=system_prompt,
             contents=contents_for_generation,
             tools_schema=tools_schema,
         )
@@ -206,9 +227,24 @@ class Agent:
                     contents, tool_name, tool_args, tool_result
                 )
 
-            # Generate next response with updated contents
+                # ROUTING: If set_company was called, switch to specialized agent
+                if tool_name == "set_company" and tool_result.get("success"):
+                    # Refresh conversation to get updated company
+                    conversation = await self._refresh_conversation(session_id)
+                    current_company = conversation.company
+
+                    # Switch prompt and tools for the specialized agent
+                    system_prompt = get_system_prompt(current_company)
+                    tools_schema = ToolRegistry.get_gemini_tools_for_group(
+                        current_company, self.session, conversation.id
+                    )
+
+                    print(f"INFO: Switched to {current_company} agent with "
+                          f"{len(tools_schema)} tools")
+
+            # Generate next response with updated contents (and potentially new prompt/tools)
             response = await gemini_service.generate_with_contents(
-                system_prompt=self.system_prompt,
+                system_prompt=system_prompt,
                 contents=contents,
                 tools_schema=tools_schema,
             )
@@ -233,7 +269,7 @@ class Agent:
             retry_contents.append(self._create_contact_hint())
 
             retry_response = await gemini_service.generate_with_contents(
-                system_prompt=self.system_prompt,
+                system_prompt=system_prompt,
                 contents=retry_contents,
                 tools_schema=tools_schema,
             )
@@ -257,7 +293,7 @@ class Agent:
 
                 # Get final response after retry tools
                 final_retry = await gemini_service.generate_with_contents(
-                    system_prompt=self.system_prompt,
+                    system_prompt=system_prompt,
                     contents=contents,
                     tools_schema=tools_schema,
                 )
@@ -284,11 +320,19 @@ class Agent:
                     "Un asesor se comunicará contigo pronto. ¡Que tengas un excelente día!"
                 )
             elif last_tool_name == "save_inquiry":
-                assistant_message = (
-                    "Perfecto. Un asesor de nuestro equipo "
-                    "se pondrá en contacto contigo a la brevedad. "
-                    "¿Hay algo más en lo que pueda ayudarte?"
-                )
+                # Customize message based on company
+                if current_company == "kossomet":
+                    assistant_message = (
+                        "Perfecto. Un técnico especializado de Kossomet "
+                        "se pondrá en contacto contigo a la brevedad. "
+                        "¿Hay algo más en lo que pueda ayudarte?"
+                    )
+                else:
+                    assistant_message = (
+                        "Perfecto. Un asesor de ventas de Kossodo "
+                        "se pondrá en contacto contigo a la brevedad. "
+                        "¿Hay algo más en lo que pueda ayudarte?"
+                    )
             elif last_tool_name == "save_contact":
                 assistant_message = (
                     "Gracias. ¿Me podrías proporcionar los datos que aún faltan?"
